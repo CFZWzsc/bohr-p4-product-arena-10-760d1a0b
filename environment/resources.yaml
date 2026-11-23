@@ -1,0 +1,88 @@
+# Resource entry point for the evaluator.
+# All paths are relative to the directory that contains SKILL.md.
+challenge:
+  id: product-arena-10-760d1a0b
+  title: 阅读15｜文献知识图谱构建
+  track: literature-reading
+  family: reading
+
+skill:
+  name: bohr-reading-knowledge-graph
+  version: 1.0.0
+  entry: SKILL.md
+  license: MIT
+
+runtime:
+  python: ">=3.10"
+  notes: "Standard library only. No third-party package is required: the bundled scripts parse PDF text layers with a dependency-free parser and fall back to reporting an honest status when no text layer exists."
+  optional_packages: []
+
+bundled:
+  scripts:
+    - scripts/sk_entry.py
+    - scripts/sk_base.py
+    - scripts/topic.py
+    - scripts/artifacts.py
+    - scripts/pptxgen.py
+    - scripts/specialize.py
+    - scripts/sk_selftest.py
+  assets:
+    - assets/result-schema.md
+    - assets/contract-aliases.json
+    - assets/policy.json
+  references:
+    - references/evidence-discipline.md
+    - references/contract-handling.md
+    - references/two-phase-workflow.md
+    - references/failure-modes.md
+    - references/artifact-pipeline.md
+  examples:
+    - examples/demo-case
+    - examples/quickstart.md
+
+io:
+  input: /input
+  work: /app/work
+  output: /app/output
+  required_output_files:
+    - result.json
+  review_artefacts:
+    - run-review.md
+  produced_artifacts:
+    - result.json
+    - run-review.md
+    - anomaly-report.json
+  entry_script: scripts/sk_entry.py
+  entry_url: skill://scripts/sk_entry.py
+  # 两阶段工作流：脚本取证 → 执行 Agent 判断 → 脚本校验合并。
+  # work_files 由脚本产出或读取，output_files 由执行 Agent 落盘。
+  work_files:
+    - agent_tasks.json
+    - agent_judgement.json
+  workflow:
+    phases: 2
+    stage_1: scripts/sk_entry.py writes /app/output/result.json and /app/work/agent_tasks.json
+    stage_2: the executing agent writes /app/work/agent_judgement.json, then re-runs scripts/sk_entry.py
+    merge_gate: every evidence quote in the judgement file is verified verbatim against the material before it is accepted
+
+platform_tools:
+  # 题面第 9 节列出的平台资源；由评测镜像提供，不随 Skill 打包。
+  - interface-example
+  - execution-contract
+  - scientific-python
+  - scientific-tools-provenance
+  - official-deepseek-harness
+  - pdf-text-tool
+  - pdf-render-tool
+  - ocr-tool
+  - latex-compiler
+  - office-renderer
+  - browser-automation
+  - font-discovery
+
+constraints:
+  text_files_max: 50
+  per_file_bytes_max: 512000
+  total_bytes_max: 2097152
+  symlinks: false
+  prepared_answers: false
