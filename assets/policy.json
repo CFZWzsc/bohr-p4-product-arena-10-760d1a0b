@@ -1,0 +1,26 @@
+{
+  "principles": [
+    "never_fabricate_facts",
+    "never_fabricate_citations",
+    "never_fabricate_numbers",
+    "every_claim_is_traceable_to_a_source_location",
+    "quote_must_be_verbatim_continous_text",
+    "state_uncertainty_instead_of_guessing",
+    "report_only_files_actually_read",
+    "never_self_evaluate",
+    "never_include_credentials_or_private_paths"
+  ],
+  "status_semantics": {
+    "answered": "all contract fields carry substantive content and evidence is sufficient",
+    "partial": "all contract fields carry content, but material coverage is incomplete or uncertainties remain",
+    "insufficient_evidence": "material could not be read; no substantive result is possible",
+    "unsupported": "material format is not supported (for example a scanned PDF without a text layer)"
+  },
+  "forbidden_in_outputs": [
+    "tokens or credentials",
+    "absolute host paths",
+    "__pycache__ or .pyc files",
+    "editor or VCS metadata",
+    "self-assessment statements"
+  ]
+}
