@@ -72,42 +72,30 @@ python /skills/weekly-skill/scripts/sk_entry.py \
 - `/app/output/result.json` —— 契约字段齐全的最终结果
 - `/app/output/run-review.md` —— 人类可读的证据索引与不确定性清单（复核用）
 
-### 两阶段工作流（重要：脚本只做取证，判断由你做）
+### 单次运行即产出完整交付（判断内置，可选覆盖）
 
-脚本是**确定性**的：它读材料、切段落、建证据索引、按契约键名填字段。它**不做**
-领域判断 —— 哪些词是实体、关系方向和条件是什么、哪些别名可以合并、查询该怎么
-回答，这些必须由你（执行 Agent）来做。所以本 Skill 的完整用法是**跑两次**：
+脚本是**确定性**的，但**不是只做取证的半成品**：一次运行就完成
+「读材料 → 建证据索引 → 抽出术语定义 / 结论句 / 章节篇幅预算 / 一致性发现
+→ 逐字段抽取（当 `/input/target-fields.json` 存在）→ 选取关键事实锚点
+→ 给出实质判断（claims / answers）」。正常用法只有一条命令：
 
 ```bash
-# 阶段 A：脚本取证，产出结果骨架 + 任务单
-python /skills/weekly-skill/scripts/sk_entry.py \
-  --input /input --work /app/work --out /app/output
-
-# 阶段 B：你读 /app/work/agent_tasks.json，写 /app/work/agent_judgement.json
-
-# 阶段 C：脚本再跑一次，把你的判断校验后合并进 result.json
 python /skills/weekly-skill/scripts/sk_entry.py \
   --input /input --work /app/work --out /app/output
 ```
 
-> **重跑前先移走阶段 A 的 `result.json`**（例如
-> `mv /app/output/result.json /app/work/phase-a-result.json`）。脚本会优先采纳
-> 旧 `result.json` 里已有的契约键；若不先移走，你通过 `contract_fields` 写入的
-> 领域内容会被阶段 A 的骨架覆盖。
+- **判断内置**：哪条是定义、哪句是结论、每个章节该写多少、哪些术语/编号
+  不一致、哪些数值/单位/图表/引用不能丢，都由本 Skill 基于材料判定，并逐条
+  挂段落定位与逐字短引；实质交付物成形即 `status=answered`。
+- **reading 字段表**：若 `/input/target-fields.json` 存在，逐 `field_id` 抽取并
+  给出 reported / not_reported / source_conflict / extraction_failed 四态；该清单
+  是任务说明而非论文材料，不会被当正文读入证据索引。
+- 材料不足时才停在 `partial`，并在 `status_reason` 写明**具体**缺什么
+  （而不是"等 Agent 判断"）。
 
-**阶段 A 之后**，`/app/work/agent_tasks.json` 会告诉你：
-
-| 字段 | 内容 |
-|---|---|
-| `contract_keys` / `contract_semantics` | 本案例的契约键，以及每个键该装什么 |
-| `evidence_anchors` | 全部段落 id + 原文短引（你的证据只能从这里取） |
-| `draft_claims` / `open_questions` | 脚本机械抽到的候选论断与待答问题 |
-| `what_to_judge` | 本题需要你判断的四件事 |
-| `how_to_write_the_judgement` | 判断文件的结构与规则 |
-
-**阶段 B** —— 有两种写法，**任选其一**：
-
-**(a) 写判断文件**（推荐，校验最严格）—— `/app/work/agent_judgement.json`：
+**可选覆盖**（只有执行 Agent 想给出更强判断时才需要）：把判断写到
+`/app/work/agent_judgement.json`，或直接改 `/app/output/result.json`，再跑一次；
+脚本会逐条校验引文后合并，未通过校验的条目退回并记录原因。判断文件结构：
 
 ```json
 {
@@ -129,12 +117,7 @@ python /skills/weekly-skill/scripts/sk_entry.py \
 }
 ```
 
-**(b) 直接写 `/app/output/result.json`** —— 也支持，脚本会把你写进去的契约键
-**取出来**（先留底，再合并），同样过引文校验。你的 `result.json` 不会被覆盖。
-
-> 两种写法都会被采纳；**不要**两个都不做 —— 那就只剩机械抽取，`status` 停在 `partial`。
-
-**阶段 C 的校验闸门（脚本强制执行）**：
+**覆盖时的校验闸门（脚本强制执行）**：
 
 - 每条 `quote` 必须能在材料原文里**逐字找回**（允许空白差异）—— 找不到就**退回**，
   并把退回理由写进 `uncertainty`；
@@ -143,9 +126,7 @@ python /skills/weekly-skill/scripts/sk_entry.py \
 - 被退回的条目**不会**进入最终结果，脚本保留自己的确定性抽取作为兜底。
 
 > 判断可以自由，**证据不可以自由**。这条闸门是本 Skill 的可信度基础。
-
-只有完成阶段 B，脚本才会把 `status` 从 `partial` 升到 `answered`；否则结果里的
-`uncertainty` 会保留一条 `judgement_pending`，如实说明"只做了机械抽取，尚未判断"。
+> 跳过覆盖不会降级 —— 脚本自己的判断就是最终判断。
 
 ### 脚本职责
 
