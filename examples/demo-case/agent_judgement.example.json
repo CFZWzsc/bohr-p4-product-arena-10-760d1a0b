@@ -1,0 +1,108 @@
+{
+  "_comment": [
+    "阶段 B 的判断文件模板。复制到 /app/work/agent_judgement.json 后按实际材料填写。",
+    "quote 必须是材料里的逐字片段 —— 脚本会逐条校验，找不到就退回。",
+    "case_id 必须与 /input/case.json 里的 case_id 一致。",
+    "本题示例为合成语料，不是正式案例结果。"
+  ],
+  "case_id": "demo-product-arena-10-760d1a0b",
+  "claims": [
+    {
+      "text": "PC-A was synthesized from resorcinol and formaldehyde.",
+      "kind": "reported",
+      "evidence": [
+        {"paragraph_id": "P004", "source_id": "10.5555/demo.2024.001", "quote": "PC-A was synthesized from resorcinol and formaldehyde."}
+      ]
+    },
+    {
+      "text": "PC-A outperforms the commercial activated carbon baseline in cycling stability.",
+      "kind": "reported",
+      "evidence": [
+        {"paragraph_id": "P006", "source_id": "10.5555/demo.2024.001", "quote": "PC-A outperforms the commercial activated carbon baseline in cycling stability."}
+      ]
+    },
+    {
+      "text": "PC-B was synthesized from phenolic resin, which differs from the PC-A route.",
+      "kind": "reported",
+      "evidence": [
+        {"paragraph_id": "P011", "source_id": "10.5555/demo.2024.002", "quote": "PC-B was synthesized from phenolic resin, not from resorcinol and formaldehyde."}
+      ]
+    }
+  ],
+  "answers": [
+    {
+      "question": "Which electrode retained at least 90 % of its initial capacitance after 5000 cycles?",
+      "answer": "PC-A retained 92 % at 1 A/g; PC-B retained 85 % at 2 A/g.",
+      "evidence": [
+        {"paragraph_id": "P005", "source_id": "10.5555/demo.2024.001", "quote": "PC-A retained 92 % of its initial capacitance after 5000 cycles at 1 A/g."},
+        {"paragraph_id": "P012", "source_id": "10.5555/demo.2024.002", "quote": "PC-B retained 85 % of its initial capacitance after 5000 cycles at 2 A/g."}
+      ]
+    }
+  ],
+  "deliverable": "Evidence-bound graph over two synthetic papers: PC-A (precursor resorcinol/formaldehyde, 92 % retention at 1 A/g) and PC-B (precursor phenolic resin, 85 % retention at 2 A/g) are kept as separate material nodes; the shared generic label 'porous carbon electrode' is not merged; PC-A outperforms the activated carbon baseline only in Paper A; no cross-paper superiority conclusion is drawn.",
+  "contract_fields": {
+    "entities": [
+      {"node_id": "N1", "name": "PC-A", "type": "material", "aliases": ["porous carbon electrode A"],
+       "source_id": "10.5555/demo.2024.001", "paragraph_id": "P003", "quote": "porous carbon electrode A (PC-A)"},
+      {"node_id": "N2", "name": "PC-B", "type": "material", "aliases": ["porous carbon electrode B"],
+       "source_id": "10.5555/demo.2024.002", "paragraph_id": "P010", "quote": "porous carbon electrode B (PC-B)"},
+      {"node_id": "N3", "name": "resorcinol and formaldehyde", "type": "material", "aliases": [],
+       "source_id": "10.5555/demo.2024.001", "paragraph_id": "P004", "quote": "resorcinol and formaldehyde"},
+      {"node_id": "N4", "name": "commercial activated carbon baseline", "type": "material", "aliases": [],
+       "source_id": "10.5555/demo.2024.001", "paragraph_id": "P006", "quote": "commercial activated carbon baseline"}
+    ],
+    "edges": [
+      {"edge_id": "E1", "source": "PC-A", "target": "resorcinol and formaldehyde", "relation": "synthesized_from",
+       "direction": "PC-A -> precursor", "conditions": "Paper A synthesis",
+       "source_id": "10.5555/demo.2024.001", "paragraph_id": "P004", "quote": "PC-A was synthesized from resorcinol and formaldehyde."},
+      {"edge_id": "E2", "source": "PC-A", "target": "commercial activated carbon baseline", "relation": "outperforms",
+       "direction": "PC-A -> baseline", "conditions": "cycling stability, Paper A",
+       "source_id": "10.5555/demo.2024.001", "paragraph_id": "P006", "quote": "PC-A outperforms the commercial activated carbon baseline in cycling stability."},
+      {"edge_id": "E3", "source": "PC-B", "target": "phenolic resin", "relation": "synthesized_from",
+       "direction": "PC-B -> precursor", "conditions": "Paper B synthesis",
+       "source_id": "10.5555/demo.2024.002", "paragraph_id": "P011", "quote": "PC-B was synthesized from phenolic resin, not from resorcinol and formaldehyde."},
+      {"edge_id": "E4", "source": "PC-A", "target": "PC-B", "relation": "compared_with",
+       "direction": "PC-A <-> PC-B", "conditions": "different electrolyte and current density; no common test condition",
+       "source_id": "10.5555/demo.2024.002", "paragraph_id": "P014", "quote": "the test conditions differ from PC-A"}
+    ],
+    "aliases": [
+      {"alias": "porous carbon electrode A", "canonical": "PC-A", "decision": "merge",
+       "basis": "Paper A defines the abbreviation in the Abstract as 'porous carbon electrode A (PC-A)'."},
+      {"alias": "porous carbon electrode B", "canonical": "PC-B", "decision": "merge",
+       "basis": "Paper B defines the abbreviation in the Abstract as 'porous carbon electrode B (PC-B)'."},
+      {"alias": "porous carbon electrode", "canonical": null, "decision": "do_not_merge",
+       "basis": "Shared generic class label only; the two papers use different precursors and electrolytes, so they are not the same physical sample."}
+    ],
+    "queries": [
+      {"query_id": "Q1", "question": "Which electrode retained at least 90 % after 5000 cycles?",
+       "result": ["PC-A: 92 % at 1 A/g (Paper A)"],
+       "evidence": [{"source_id": "10.5555/demo.2024.001", "paragraph_id": "P005",
+                     "quote": "PC-A retained 92 % of its initial capacitance after 5000 cycles at 1 A/g."}],
+       "undetermined": ["PC-B retained 85 %, below the 90 % threshold."]},
+      {"query_id": "Q2", "question": "Do PC-A and PC-B share the same synthesis route?",
+       "result": ["No: PC-A uses resorcinol and formaldehyde; PC-B uses phenolic resin."],
+       "evidence": [{"source_id": "10.5555/demo.2024.002", "paragraph_id": "P011",
+                     "quote": "PC-B was synthesized from phenolic resin, not from resorcinol and formaldehyde."}],
+       "undetermined": []},
+      {"query_id": "Q3", "question": "Is PC-B superior to PC-A?",
+       "result": ["Undetermined: no query returns a supported cross-paper superiority relation."],
+       "evidence": [{"source_id": "10.5555/demo.2024.002", "paragraph_id": "P014",
+                     "quote": "the test conditions differ from PC-A"}],
+       "undetermined": ["Electrolyte and current density differ across the two papers."]}
+    ]
+  },
+  "uncertainties": [
+    {
+      "kind": "not_mergeable_entity",
+      "item": "porous carbon electrode",
+      "detail": "The same generic class label appears in both papers, but precursors and electrolytes differ.",
+      "resolution": "Kept PC-A and PC-B as separate nodes and recorded the do_not_merge decision."
+    },
+    {
+      "kind": "missing_page_locator",
+      "item": "all sources",
+      "detail": "The demo material provides paragraph blocks, not original PDF page numbers.",
+      "resolution": "Used paragraph ids and did not invent PDF page numbers."
+    }
+  ]
+}
