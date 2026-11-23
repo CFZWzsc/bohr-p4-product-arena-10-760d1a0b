@@ -238,6 +238,23 @@ python /skills/weekly-skill/scripts/sk_entry.py \
 
 详见 `references/failure-modes.md` 与 `references/evidence-discipline.md`。
 
+## 一致性清单产出（v15）
+
+引擎在同一次运行里从已加载材料确定性地产出下列清单，条目均为逐字引文 +
+段落/来源定位，不做语义改写、不编造：
+
+| 产物 | `result.json` 键 | 依据 |
+|---|---|---|
+| 术语表 | `glossary` | 显式定义句式、缩写全称展开、高频缩写兜底（标注 `first_use_context`） |
+| 符号与单位 | `symbols`、`units` | 希腊字母、下标变量与常见单位串 |
+| 结论清单 | `conclusions` | 因此/综上/结果表明/we conclude 等提示句 |
+| 章节预算 | `section_plan` | 大纲或 Markdown 标题；无大纲时 `derived: true` |
+| 跨章一致性 | `consistency_audit` | 术语写法变体、图表编号重复或跳号、重复定义 |
+| 术语-章节图 | `graph` | 术语为节点，出现章节为边 |
+
+材料中确实没有定义句或结论句时，对应列表为空，并在 `uncertainty` 写
+`no_explicit_definitions` 说明原因；不要为了填满字段而杜撰条目。
+
 ## 自检
 
 `result.json` 写完后由 `scripts/sk_entry.py` 自动自检（结构、契约覆盖、
