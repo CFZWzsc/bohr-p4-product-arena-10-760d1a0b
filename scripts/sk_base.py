@@ -229,10 +229,15 @@ def find_material_files(input_dir: str, skip: set[str] | None = None) -> list[st
     """
     skip = skip or set()
     exts = {".pdf", ".json", ".jsonl", ".md", ".txt", ".xml", ".csv", ".tsv", ".html"}
+    # 组织方给的字段清单是**任务说明**，不是论文材料。把它当材料读会污染
+    # 段落/证据索引（JSON 语法会被当成正文），也会让字段抽取去匹配清单本身。
+    instruction_files = {"case.json", "task.md", "task.txt",
+                         "target-fields.json", "target_fields.json",
+                         "output-contract.json", "output_contract.json"}
     out = []
     for path in list_input_tree(input_dir):
         base = os.path.basename(path).lower()
-        if base in ("case.json", "task.md", "task.txt"):
+        if base in instruction_files:
             continue
         if base in skip:
             continue
