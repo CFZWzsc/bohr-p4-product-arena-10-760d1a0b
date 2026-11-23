@@ -1782,7 +1782,7 @@ def _produce_artifacts(family: str, case: dict[str, Any],
     # slides
     if PPT is None:
         return {"_error": "pptxgen module unavailable"}
-    pages = PPT.build_pages(paras, str(case.get("task_instruction") or ""))
+    pages = PPT.build_pages(paras, str(case.get("task_instruction") or ""), case)
     res = PPT.write_slides_artifacts(out_dir, pages, case)
     files = res["files"]
     return {
@@ -1858,6 +1858,7 @@ def _produce_artifacts(family: str, case: dict[str, Any],
                         "每页含标题、要点、来源段落与**分离**的讲稿备注，"
                         "并逐页渲染预览。"),
             "pages": res["pages"],
+            "page_plan": res.get("page_plan") or [],
             "artifacts": files,
             "instruction_echo": B.truncate_quote(
                 str(case.get("task_instruction") or ""), 400),
@@ -1938,6 +1939,62 @@ def _short_quote(text: str, limit: int = 120) -> str:
     return s if len(s) <= limit else s[:limit].rstrip() + "…"
 
 
+def _derive_slides_judgement(sem: dict[str, Any]
+                             ) -> tuple[list[dict[str, Any]],
+                                        list[dict[str, Any]], str]:
+    """把按叙事角色生成的页级计划转成证据锚定的论断与回答。"""
+    deliverable = sem.get("deliverable") if isinstance(sem.get("deliverable"), dict) else {}
+    pages = deliverable.get("page_plan") or []
+    sourced = [p for p in pages if isinstance(p, dict)
+               and str(p.get("source_paragraph_id") or "")]
+    if len(pages) < 3 or len(sourced) < max(2, len(pages) // 2):
+        return [], [], ""
+    claims: list[dict[str, Any]] = []
+    for p in pages:
+        if not isinstance(p, dict):
+            continue
+        pids = str(p.get("source_paragraph_id") or "")
+        quote = (str(p.get("quote") or "")).rstrip()
+        if quote.endswith("…"):
+            quote = quote[:-1].rstrip()
+        if not quote or not pids:
+            continue
+        role = str(p.get("role") or p.get("kind") or "content")
+        claims.append({
+            "claim_id": f"D{len(claims) + 1:03d}",
+            "text": (f"第 {p.get('page')} 页「{p.get('title')}」承担{role}，"
+                     f"{len(p.get('bullets') or [])} 条要点来自段落 {pids}"),
+            "kind": "derived_page_role",
+            "evidence": [{
+                "paragraph_id": pids,
+                "quote": quote,
+                "source_id": str(p.get("source_id") or ""),
+                "location": pids,
+            }],
+            "source_id": str(p.get("source_id") or ""),
+            "location": pids,
+            "conditions": [],
+        })
+    if len(claims) < 3:
+        return [], [], ""
+    roles = [str(p.get("role") or p.get("kind")) for p in pages if isinstance(p, dict)]
+    answer = {
+        "question_id": "Q-SKILL-1",
+        "question": "这份演示文稿的页序与每页承担的叙事角色是什么？",
+        "answer": (f"演示稿共 {len(pages)} 页，按{'→'.join(roles)}组织；"
+                   "每页要点均为材料原句，页级证据映射可逐页回查。"),
+        "conditions": [],
+        "status": "answered",
+        "evidence": [dict(claims[0]["evidence"][0])],
+        "source_id": str(claims[0].get("source_id") or ""),
+    }
+    reason = (f"the skill planned and wrote the deck itself: {len(pages)} pages "
+              "with explicit narrative roles, verbatim bullets and a page-level "
+              "evidence map, plus an editable .pptx and per-page previews in "
+              "/app/output")
+    return claims, [answer], reason
+
+
 def _derive_delivery_judgement(family: str, sem: dict[str, Any],
                                paras: list[dict[str, Any]]
                                ) -> tuple[list[dict[str, Any]],
@@ -1950,6 +2007,8 @@ def _derive_delivery_judgement(family: str, sem: dict[str, Any],
     真的成形（定义/结论 ≥2 条，或 reading 的字段表有 reported 条目，或 writing
     的逐段改写目标 ≥2 段）才升级为 answered，否则维持 partial。
     """
+    if family == "slides":
+        return _derive_slides_judgement(sem)
     if family not in ("reading", "writing"):
         return [], [], ""
 
