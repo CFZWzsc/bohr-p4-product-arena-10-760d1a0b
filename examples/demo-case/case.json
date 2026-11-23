@@ -1,0 +1,24 @@
+{
+ "case_id": "demo-product-arena-10-760d1a0b",
+ "topic_id": "product-arena-10-760d1a0b",
+ "topic_title": "阅读15｜文献知识图谱构建",
+ "difficulty": 3,
+ "domain": "reading",
+ "task_instruction": "演示用例：请从同目录下的两篇合成论文中抽取实体与关系，绑定独立论文来源与原文段落证据，记录别名合并与不得合并的决策，并执行至少 3 个查询；无法确定或冲突的部分写入 uncertainties。",
+ "output_contract": {
+  "case_id": "原样保留",
+  "case_identifiers": "输入标识 :: `case_id`、`corpus_id`、`material_version` 与本次输入一致。 | 子字段: case_id, corpus_id, material_version",
+  "entities": "图谱节点 :: 每项含 node_id、name（原文表述）、type（researcher/material/method/task/metric/conclusion）、aliases，以及 source_id、paragraph_id、quote。",
+  "edges": "图谱边 :: 每项含 edge_id、source、target、relation（使用/比较/优于/支持/矛盾等）、direction、conditions，以及 source_id、paragraph_id、quote。",
+  "aliases": "别名与对齐决策 :: 每项含 alias、canonical、decision（merge/keep_separate/do_not_merge）、basis；无法确认的别名保持分开。",
+  "queries": "图谱查询 :: 至少 3 个实际查询，每项含 query_id、question、result（结果子图/答案）、evidence、undetermined（无法确定的关系）。",
+  "claims": "每条关键结论附 kind、evidence、source_id、location",
+  "evidence": "证据与来源定位 :: 论文 source_id、JATS paragraph_id、原文短引；无 PDF 页码时不编造页码。",
+  "coverage": "构建覆盖 :: 已读论文/段落、未读部分及原因。",
+  "status": "answered|partial|insufficient_evidence|unsupported",
+  "uncertainties": "未报告、无法判断、冲突、不得合并项和人工复核项"
+ },
+ "evaluation": {
+  "mode": "demo"
+ }
+}
