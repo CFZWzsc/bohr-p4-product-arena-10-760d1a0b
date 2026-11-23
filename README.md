@@ -9,7 +9,7 @@ answers, private data or credentials are included.
 ## Skill
 
 - Name: `literature-knowledge-graph-builder`
-- Summary: Use when a corpus must be turned into an evidence-bearing knowledge graph with entity/relation queries and justified alias merges.
+- Summary: Use when a corpus must become an evidence-bearing knowledge graph with node/edge locators, justified cross-paper alias decisions and at least three executed queries.
 
 ## Contents
 
