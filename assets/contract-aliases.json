@@ -1,0 +1,4 @@
+{
+ "note": "contract keys are resolved at runtime; see references/contract-handling.md",
+ "semantic_map": "scripts/topic.py :: KEY_SEMANTICS"
+}
