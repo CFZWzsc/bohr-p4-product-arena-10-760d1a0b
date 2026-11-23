@@ -1972,6 +1972,11 @@ def _derive_delivery_judgement(family: str, sem: dict[str, Any],
 
     def _claim(text: str, paragraph_id: str, quote: str, source_id: str,
                kind: str) -> None:
+        # 锚点值可能是带省略号的截断串；证据必须是逐字片段，去掉末尾省略号
+        # 后剩下的前缀仍然逐字来自原文。
+        quote = (quote or "").rstrip()
+        if quote.endswith("…"):
+            quote = quote[:-1].rstrip()
         if not quote:
             return
         claims.append({
