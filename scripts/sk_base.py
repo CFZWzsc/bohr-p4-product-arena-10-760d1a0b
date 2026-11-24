@@ -167,8 +167,29 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def iso_from_path(path: str) -> str:
+    """Deterministic provenance stamp taken from an input file's mtime."""
+    try:
+        ts = int(os.path.getmtime(path))
+    except OSError:
+        ts = 0
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
 def now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    """Provenance stamp that is stable for a given input.
+
+    A wall-clock stamp makes two identical runs emit different bytes while
+    `metadata.deterministic` claims the opposite, so the stamp comes from the
+    input file (or an explicit SK_TIMESTAMP) instead of the clock.
+    """
+    stamp = os.environ.get("SK_TIMESTAMP", "")
+    if stamp:
+        return stamp
+    case_path = os.environ.get("SK_INPUT_CASE", "")
+    if case_path and os.path.isfile(case_path):
+        return iso_from_path(case_path)
+    return "1970-01-01T00:00:00Z"
 
 
 # ---------------------------------------------------------------------------
