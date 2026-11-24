@@ -1152,8 +1152,12 @@ def write_anomaly_report(out_dir: str, fields: list[dict[str, Any]],
         os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, "anomaly-report.json")
         report["file"] = path
+        # Serialize the basename, not the host path: an absolute path leaks the
+        # sandbox layout and makes identical runs differ byte for byte.
+        shown = dict(report)
+        shown["file"] = os.path.basename(path)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump(report, fh, ensure_ascii=False, indent=2)
+            json.dump(shown, fh, ensure_ascii=False, indent=2)
     return report
 
 
@@ -1259,8 +1263,12 @@ def write_qa_report(out_dir: str, sections: list[dict[str, Any]],
         os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, "qa-report.json")
         report["file"] = path
+        # Serialize the basename, not the host path: an absolute path leaks the
+        # sandbox layout and makes identical runs differ byte for byte.
+        shown = dict(report)
+        shown["file"] = os.path.basename(path)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump(report, fh, ensure_ascii=False, indent=2)
+            json.dump(shown, fh, ensure_ascii=False, indent=2)
     return report
 
 
@@ -1964,8 +1972,12 @@ def write_format_spec_checklist(out_dir: str, input_dir: str,
         os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, "format-spec-checklist.json")
         report["file"] = path
+        # Serialize the basename, not the host path: an absolute path leaks the
+        # sandbox layout and makes identical runs differ byte for byte.
+        shown = dict(report)
+        shown["file"] = os.path.basename(path)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump(report, fh, ensure_ascii=False, indent=2)
+            json.dump(shown, fh, ensure_ascii=False, indent=2)
     return report
 
 
@@ -2092,8 +2104,12 @@ def write_writing_anomaly_report(out_dir: str, sections: list[dict[str, Any]],
         os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, "anomaly-report.json")
         report["file"] = path
+        # Serialize the basename, not the host path: an absolute path leaks the
+        # sandbox layout and makes identical runs differ byte for byte.
+        shown = dict(report)
+        shown["file"] = os.path.basename(path)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump(report, fh, ensure_ascii=False, indent=2)
+            json.dump(shown, fh, ensure_ascii=False, indent=2)
     return report
 
 
