@@ -38,6 +38,7 @@ except ImportError:  # pragma: no cover - 没有 topic.py 时退化为通用骨�
 
 def run_once(input_dir: str, work_dir: str, out_dir: str) -> int:
     case, case_path = B.discover_case(input_dir)
+    os.environ["SK_INPUT_CASE"] = case_path or ""
     alias_table = B.build_alias_table(T.TOPIC_ALIASES if T else {})
 
     if not case:
