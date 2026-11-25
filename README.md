@@ -16,7 +16,6 @@ answers, private data or credentials are included.
 | File |
 |------|
 | `LICENSE` |
-| `README.md` |
 | `SKILL.md` |
 | `assets/contract-aliases.json` |
 | `assets/policy.json` |
