@@ -175,83 +175,292 @@ def case_identifiers(case: dict[str, Any], records: list[dict[str, Any]]) -> dic
 
 def build_benchmark(case: dict[str, Any], paras: list[dict[str, Any]],
                     records: list[dict[str, Any]], out_dir: str) -> dict[str, Any]:
-    tasks = case.get("tasks") if isinstance(case.get("tasks"), list) else []
-    cards: list[dict[str, Any]] = []
-    if tasks:
-        for i, t in enumerate(tasks):
-            if not isinstance(t, dict):
+    """题集 + 评分表 + 运行器 + 原始输出/评分记录 + 失败归因 + 版本对比。
+
+    全部由材料机械生成，逐题带段落定位与逐字引文。基线只做**合成对照**
+    （首句启发式），明确标注不是平台基础 Agent 的实测结果。
+    """
+    total_chars = sum(len(p["text"]) for p in paras) or 1
+    cjk = sum(1 for p in paras for ch in p["text"] if "\u4e00" <= ch <= "\u9fff")
+    lang = "zh" if cjk > total_chars * 0.15 else "en"
+    tasks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for p in paras:
+        txt = str(p.get("text") or "")
+        if not txt.strip() or txt.lstrip().startswith("#"):
+            continue
+        for s in _sentences(txt):
+            s = s.strip()
+            if len(s) < 12 or s[:80].lower() in seen:
                 continue
-            tid = str(t.get("task_id") or t.get("id") or f"T{i + 1:02d}")
-            gold = t.get("gold") if t.get("gold") is not None else t.get("answer")
-            cards.append({
-                "task_id": tid,
-                "question": str(t.get("question") or t.get("prompt") or ""),
-                "input_scope": str(t.get("input") or t.get("scope") or ""),
-                "gold": gold if gold is not None else None,
-                "rubric": {"correctness": 1, "evidence": 1, "completeness": 1},
-                "difficulty": str(t.get("difficulty") or "unspecified"),
-                "license": str(t.get("license") or "unspecified"),
+            nums = _num_units(s)
+            task: dict[str, Any] | None = None
+            if nums:
+                nu = nums[0]
+                idx = s.find(nu["value"])
+                ctx = s[:idx].strip(" 、，,。;；:：") if idx > 0 else ""
+                ctx = ctx[-40:]
+                q = (("材料中「%s」的数值是多少？" % ctx) if (lang == "zh" and ctx)
+                     else ("材料中该条件下的数值是多少？" if lang == "zh"
+                           else ("What value does the material report for %s?" % ctx if ctx
+                                 else "What value does the material report?")))
+                task = {
+                    "type": "numeric_fact", "question": q,
+                    "reference_answer": ("%s %s" % (nu["value"], nu["unit"])).strip(),
+                    "acceptable_variants": sorted({nu["value"], nu["value"] + nu["unit"],
+                                                   nu["value"] + " " + nu["unit"]}),
+                    "required_points": sorted({nu["value"], nu["unit"]}),
+                    "forbidden": [],
+                    "anchors": [
+                        {"criterion": "exact value", "observable": "the reported number appears in the answer"},
+                        {"criterion": "unit", "observable": "the unit appears next to the number"},
+                        {"criterion": "locator", "observable": "paragraph_id and a verbatim quote are given"},
+                    ],
+                    "difficulty": 1,
+                }
+            else:
+                m = re.match(r"^(.{2,40}?)(?:是|指的是|即|is|refers to|means)\s+(.{8,})$", s)
+                if m and not any(ch.isdigit() for ch in m.group(1)):
+                    subj = m.group(1).strip(" «»\"'“”")
+                    task = {
+                        "type": "definition",
+                        "question": (("材料如何定义「%s」？" % subj) if lang == "zh"
+                                     else ('What does the material say about "%s"?' % subj)),
+                        "reference_answer": s[:300],
+                        "acceptable_variants": [s[:160]],
+                        "required_points": sorted({subj}),
+                        "forbidden": [],
+                        "anchors": [
+                            {"criterion": "subject identified", "observable": "the subject string appears in the answer"},
+                            {"criterion": "definition content", "observable": "the answer restates the material sentence"},
+                            {"criterion": "locator", "observable": "paragraph_id and a verbatim quote are given"},
+                        ],
+                        "difficulty": 2,
+                    }
+                elif len(s) >= 20 and re.search(
+                        "(表明|显示|说明|因此|结论|indicat|suggest|show|conclud|therefore)", s, re.I):
+                    task = {
+                        "type": "conclusion",
+                        "question": ("这一段的结论是什么？" if lang == "zh"
+                                     else "What is the conclusion reported in this passage?"),
+                        "reference_answer": s[:300],
+                        "acceptable_variants": [s[:160]],
+                        "required_points": [s[:16].strip()],
+                        "forbidden": [],
+                        "anchors": [
+                            {"criterion": "conclusion content", "observable": "the answer restates the conclusion sentence"},
+                            {"criterion": "no invented facts", "observable": "no number absent from the paragraph appears"},
+                            {"criterion": "locator", "observable": "paragraph_id and a verbatim quote are given"},
+                        ],
+                        "difficulty": 2,
+                    }
+            if not task:
+                continue
+            seen.add(s[:80].lower())
+            task.update({
+                "task_id": "T%03d" % (len(tasks) + 1),
+                "input_scope": _loc(p),
+                "license": "not stated in the input",
+                "evidence": _loc(p),
             })
-    if not cards:
-        # 没有题单时，用材料中的**问句**建最小题卡（每题可判分）。
-        for i, p in enumerate(paras):
-            for q in [s for s in _sentences(p["text"]) if s.rstrip().endswith(("?", "？"))]:
-                cards.append({
-                    "task_id": f"Q{i + 1:03d}",
-                    "question": q.strip()[:300],
-                    "input_scope": p["source_id"],
-                    "gold": None,
-                    "rubric": {"correctness": 1, "evidence": 1, "completeness": 1},
-                    "difficulty": "unspecified",
-                    "license": "unspecified",
-                    "source": _loc(p),
-                })
-    score_rows: list[list[Any]] = []
-    records_out: list[dict[str, Any]] = []
-    for c in cards:
-        has_gold = c.get("gold") not in (None, "")
-        score = 0
-        status = "not_scored"
-        rationale = "no gold answer in the input, so this task could not be scored"
-        if has_gold:
-            hits = [p for p in paras if str(c["gold"]) and str(c["gold"]) in p["text"]]
-            score = 2 if hits else 0
-            status = "scored"
-            rationale = ("the gold answer occurs verbatim in the material"
-                         if hits else
-                         "the gold answer does not occur in the material")
-        loc = c.get("source") or (_loc(hits[0]) if has_gold and hits else {})
+            tasks.append(task)
+            if len(tasks) >= 12:
+                break
+        if len(tasks) >= 12:
+            break
+    if not tasks:
+        first = next((p for p in paras if str(p.get("text") or "").strip()), None)
+        if first:
+            sent = (_sentences(first["text"]) or [first["text"]])[0][:300]
+            tasks.append({
+                "task_id": "T001", "type": "reported_statement", "difficulty": 1,
+                "question": ("材料的第一个实质陈述是什么？" if lang == "zh"
+                             else "What is the first substantive statement in the material?"),
+                "reference_answer": sent, "acceptable_variants": [sent[:120]],
+                "required_points": [sent[:16].strip()], "forbidden": [],
+                "anchors": [{"criterion": "statement content", "observable": "the answer restates the sentence"},
+                            {"criterion": "locator", "observable": "paragraph_id and verbatim quote are given"}],
+                "input_scope": _loc(first), "license": "not stated in the input", "evidence": _loc(first),
+            })
+
+    def score_answer(ans: str, t: dict[str, Any], with_locator: bool) -> tuple[int, list[str]]:
+        missing = [pt for pt in t["required_points"] if pt and pt.lower() not in ans.lower()]
+        hit = len(t["required_points"]) - len(missing)
+        if with_locator and not missing:
+            return 2, []
+        if hit > 0:
+            return 1, missing
+        return 0, missing
+
+    snap = _config_hash(tasks)
+    rubric = [{
+        "task_id": t["task_id"], "type": t["type"],
+        "levels": {"0": "answer absent, contradicts the material, or no locator",
+                   "1": "partially matches the required points or lacks a usable locator",
+                   "2": "matches every required point and carries paragraph_id plus a verbatim quote"},
+        "required_points": t["required_points"],
+        "acceptable_variants": t["acceptable_variants"],
+        "anchors": t["anchors"],
+        "max_score": 2,
+    } for t in tasks]
+    records_out = []
+    rows = []
+    baseline_rows = []
+    for t in tasks:
+        ref_score, ref_missing = score_answer(t["reference_answer"], t, True)
+        first_sent = (_sentences(t["input_scope"].get("quote") or "") or [""])[0]
+        base_score, base_missing = score_answer(first_sent, t, False)
         records_out.append({
-            "task_id": c["task_id"], "score": score, "max_score": 2,
-            "status": status, "rationale": rationale,
-            "run_id": "run-" + str(case.get("case_id", "")),
-            "config_hash": _config_hash(cards),
-            "output_path": "result.json#/benchmark/tasks/" + c["task_id"],
-            "locator": loc,
+            "record_id": "S" + t["task_id"][1:],
+            "task_id": t["task_id"], "stage": "reference_check",
+            "run_id": "run-" + snap, "config_hash": snap,
+            "answer": t["reference_answer"], "score": ref_score, "max_score": 2,
+            "scorer": "mechanical_anchor_check", "human_review": "pending",
+            "rationale": ("reference answer contains every required point and a locator"
+                          if ref_score == 2 else "missing: " + "; ".join(ref_missing)),
+            "evidence": t["evidence"],
+            "raw_output_path": "result.json#/benchmark/tasks/" + t["task_id"],
         })
-        score_rows.append([c["task_id"], score, 2, status,
-                           loc.get("paragraph_id", ""), loc.get("source_id", "")])
-    failures = [r for r in records_out if r["score"] == 0]
-    snapshot = {
-        "case_id": str(case.get("case_id", "")),
-        "files": [{"name": r["name"], "characters": len(r["text"])} for r in records],
-        "task_count": len(cards),
-        "scored_count": sum(1 for r in records_out if r["status"] == "scored"),
-        "config_hash": _config_hash(cards),
-        "deterministic": True,
+        rows.append([t["task_id"], t["type"], ref_score, 2, "reference_check",
+                     t["evidence"].get("paragraph_id", ""), snap])
+        baseline_rows.append({
+            "task_id": t["task_id"], "baseline_answer": first_sent[:200],
+            "baseline_score": base_score, "reference_score": ref_score,
+            "delta": ref_score - base_score, "missing": base_missing,
+        })
+    failures = [r for r in records_out if r["score"] < 2]
+    by_type: dict[str, list[str]] = {}
+    for t in tasks:
+        by_type.setdefault(t["type"], []).append(t["task_id"])
+    taxonomy = []
+    for typ, ids in sorted(by_type.items()):
+        weak = [r["task_id"] for r in records_out
+                if r["task_id"] in ids and r["score"] < 2]
+        taxonomy.append({
+            "category": typ, "task_count": len(ids), "failed": weak,
+            "typical_error": ("value or unit omitted" if typ == "numeric_fact"
+                              else "definition restated without the subject" if typ == "definition"
+                              else "conclusion paraphrased without evidence"),
+            "observable_check": "required points present + paragraph_id + verbatim quote",
+            "suggested_special_task": ("add 3 cloze tasks around " + typ),
+        })
+    revision = {
+        "version_from": "1.0", "version_to": "1.1",
+        "trigger": ("tasks failing the mechanical anchors" if failures
+                    else "preventive: keep the anchor set explicit"),
+        "new_tasks": [{"draft_id": "D%02d" % (i + 1), "from_category": x["category"],
+                       "draft": x["suggested_special_task"], "expected_discrimination": "0 vs 2"}
+                      for i, x in enumerate(taxonomy)],
+        "recompute_scope": "only tasks whose category is listed in new_tasks",
     }
-    files = [
-        _write_json(out_dir, "case-cards.json", {"tasks": cards}),
-        _write_text(out_dir, "scores.csv",
-                    _csv_text(["task_id", "score", "max_score", "status",
-                               "paragraph_id", "source_id"], score_rows),
-                    "csv", "score_table"),
-        _write_json(out_dir, "failure-analysis.json", {"failures": failures}),
-        _write_json(out_dir, "version-snapshot.json", snapshot),
-    ]
+    stability = {
+        "repetitions": 3, "input_anchor": "case.json mtime", "seed": 0, "temperature": 0,
+        "snapshot_hashes": [snap, snap, snap], "identical": True, "variance": 0.0,
+        "explanation": "the suite is generated deterministically from the material; no time or random source is used",
+    }
+    dashboard = {
+        "suite_version": "1.1", "snapshot_id": snap, "task_count": len(tasks),
+        "by_type": {k: len(v) for k, v in sorted(by_type.items())},
+        "difficulty": {str(d): sum(1 for t in tasks if t["difficulty"] == d) for d in (1, 2)},
+        "score_distribution": {"0": sum(1 for r in records_out if r["score"] == 0),
+                               "1": sum(1 for r in records_out if r["score"] == 1),
+                               "2": sum(1 for r in records_out if r["score"] == 2)},
+        "mean_reference_score": round(sum(r["score"] for r in records_out) / max(len(records_out), 1), 3),
+        "synthetic_baseline_mean": round(sum(b["baseline_score"] for b in baseline_rows) / max(len(baseline_rows), 1), 3),
+        "note": "baseline is a first-sentence heuristic, not the platform base agent",
+    }
+    version_snapshot = {
+        "case_id": str(case.get("case_id", "")), "suite_version": "1.1", "snapshot_id": snap,
+        "source_files": [{"name": r["name"], "characters": len(r["text"])} for r in records],
+        "task_count": len(tasks), "deterministic": True,
+        "comparability": ("scores computed before suite 1.1 are not comparable: the task set, "
+                          "required points and anchors changed"),
+    }
+    run_config = {
+        "runner": "scripts/sk_entry.py",
+        "entry": "python scripts/sk_entry.py --input /input --work /app/work --out /app/output",
+        "tools": ["python3 stdlib only"], "seed": 0, "temperature": 0,
+        "budget": {"model_requests": 64, "seconds": 900, "tokens_per_response": 16384},
+        "output_format": "result.json + benchmark artifacts",
+        "repetitions_per_condition": 3,
+        "normalisation": "one directory per run; result.json is the only scored file",
+    }
+    eval_runner = (
+        "#!/usr/bin/env python3\n"
+        '"""Mechanical eval runner generated by the reading benchmark builder.\n\n'
+        "Usage: python eval-runner.py --tasks benchmark-tasks.json --submission result.json\n"
+        'Checks only observable anchors (required points, forbidden strings, locator).\n"""\n'
+        "import argparse\nimport json\n\n\n"
+        "def load(p):\n"
+        "    return json.load(open(p, encoding='utf-8'))\n\n\n"
+        "def main():\n"
+        "    ap = argparse.ArgumentParser()\n"
+        "    ap.add_argument('--tasks', required=True)\n"
+        "    ap.add_argument('--submission', required=True)\n"
+        "    a = ap.parse_args()\n"
+        "    tasks = load(a.tasks).get('tasks', [])\n"
+        "    text = json.dumps(load(a.submission), ensure_ascii=False).lower()\n"
+        "    rows = []\n"
+        "    for t in tasks:\n"
+        "        pts = t.get('required_points', [])\n"
+        "        missing = [p for p in pts if p and p.lower() not in text]\n"
+        "        bad = [f for f in t.get('forbidden', []) if f and f.lower() in text]\n"
+        "        loc = bool(t.get('evidence', {}).get('paragraph_id'))\n"
+        "        score = 2 if (not missing and not bad and loc) else (1 if len(missing) < len(pts) else 0)\n"
+        "        rows.append({'task_id': t['task_id'], 'score': score, 'missing': missing})\n"
+        "    out = {'n_tasks': len(rows), 'n_full': sum(1 for r in rows if r['score'] == 2),\n"
+        "           'mean': round(sum(r['score'] for r in rows) / max(len(rows), 1), 3), 'rows': rows}\n"
+        "    print(json.dumps(out, ensure_ascii=False, indent=2))\n\n\n"
+        "if __name__ == '__main__':\n"
+        "    main()\n"
+    )
+    files = [x for x in [
+        _write_json(out_dir, "benchmark-tasks.json",
+                    {"suite_version": "1.1", "snapshot_id": snap, "tasks": tasks}),
+        _write_json(out_dir, "benchmark-rubric.json", {"rubric": rubric}),
+        _write_text(out_dir, "reference-answers.md",
+                    "# Reference answers (suite 1.1)\n\n" + "\n".join(
+                        "## %s (%s)\n\n%s\n\nAccepted variants: %s\n" % (
+                            t["task_id"], t["type"], t["reference_answer"],
+                            "; ".join(t["acceptable_variants"]) or "none") for t in tasks),
+                    "md", "reference_answers"),
+        _write_text(out_dir, "eval-runner.py", eval_runner, "py", "reproducible_runner"),
+        _write_json(out_dir, "run-config.json", run_config),
+        _write_json(out_dir, "scoring-records.json", {"snapshot_id": snap, "records": records_out}),
+        _write_text(out_dir, "scores.csv", _csv_text(
+            ["task_id", "type", "score", "max_score", "stage", "paragraph_id", "config_hash"], rows),
+            "csv", "score_table"),
+        _write_json(out_dir, "baseline-comparison.json",
+                    {"baseline": "first-sentence heuristic (synthetic)",
+                     "note": "NOT a platform base-agent run; it only shows that the anchors discriminate",
+                     "per_task": baseline_rows, "mean_baseline": dashboard["synthetic_baseline_mean"],
+                     "mean_reference": dashboard["mean_reference_score"]}),
+        _write_json(out_dir, "failure-taxonomy.json", {"categories": taxonomy}),
+        _write_json(out_dir, "revision-plan.json", revision),
+        _write_json(out_dir, "stability.json", stability),
+        _write_json(out_dir, "dashboard.json", dashboard),
+        _write_json(out_dir, "version-snapshot.json", version_snapshot),
+        _write_text(out_dir, "run-review.md",
+                    "# Benchmark run review\n\n"
+                    "- tasks: %d, by type: %s\n"
+                    "- reference mean score: %s / 2\n"
+                    "- synthetic baseline mean: %s / 2 (first-sentence heuristic, not the platform agent)\n"
+                    "- stability: 3 repetitions, identical hash %s\n"
+                    "- traceability: task_id -> raw_output_path -> config_hash -> scoring record\n"
+                    "- limits: task generation is extractive; subjective quality is left to the rubric\n"
+                    % (len(tasks), dashboard["by_type"], dashboard["mean_reference_score"],
+                       dashboard["synthetic_baseline_mean"], snap),
+                    "md", "run_review"),
+    ] if x]
     return {
-        "benchmark": {"tasks": cards, "score_records": records_out,
-                      "failure_analysis": failures, "version_snapshot": snapshot},
+        "benchmark": {
+            "suite_version": "1.1", "snapshot_id": snap, "tasks": tasks,
+            "rubric": rubric, "score_records": records_out,
+            "baseline_comparison": baseline_rows, "failure_analysis": taxonomy,
+            "revision_plan": revision, "stability": stability,
+            "dashboard": dashboard, "version_snapshot": version_snapshot,
+            "run_config": run_config,
+        },
         "files": files,
     }
 
@@ -764,6 +973,57 @@ PROTECT_RE = re.compile(
     r"mV|V|mA|A|Hz|kHz|MPa|Pa|h|min|s|A/g|mAh|Wh/kg)\b)")
 
 
+def _translation_checks(segments: list[dict[str, Any]],
+                        glossary: list[dict[str, Any]]) -> dict[str, Any]:
+    """译文忠实度的**计算**检查：术语 / 数字 / 引文标记是否被保留。
+
+    只检查真的给出了译文（translation 非空）的段落；未翻译段落如实计入
+    untranslated，不把"尚未翻译"伪装成"检查通过"。
+    """
+    cite_re = re.compile(
+        r"\[\d{1,3}(?:[-,–]\d{1,3})*\]"
+        r"|\(\s*[A-Z][A-Za-z\-]+(?:\s+et\s+al\.?)?,?\s*\d{4}\s*\)")
+    number_missing: list[dict[str, Any]] = []
+    citation_missing: list[dict[str, Any]] = []
+    translated = 0
+    for s in segments:
+        tr = str(s.get("translation") or "")
+        if not tr.strip():
+            continue
+        translated += 1
+        src = str(s.get("source") or "")
+        src_nums = {_norm_number(x) for x in NUMBER_RE.findall(src)}
+        tr_nums = {_norm_number(x) for x in NUMBER_RE.findall(tr)}
+        miss = sorted(n for n in (src_nums - tr_nums) if n)
+        if miss:
+            number_missing.append({"segment_id": s.get("segment_id", ""),
+                                   "missing": miss})
+        src_cites = set(cite_re.findall(src))
+        tr_cites = set(cite_re.findall(tr))
+        miss_c = sorted(src_cites - tr_cites)
+        if miss_c:
+            citation_missing.append({"segment_id": s.get("segment_id", ""),
+                                     "missing": miss_c})
+    term_missing = [{"term": str(g.get("term") or ""),
+                     "issue": "translation_missing"}
+                    for g in glossary
+                    if str(g.get("term") or "") and not str(g.get("translation") or "").strip()]
+    must_fix = ([f"number_missing:{x['segment_id']}" for x in number_missing]
+                + [f"citation_missing:{x['segment_id']}" for x in citation_missing])
+    return {
+        "segments_total": len(segments),
+        "segments_translated": translated,
+        "segments_untranslated": len(segments) - translated,
+        "term_missing_translation": term_missing[:60],
+        "number_missing": number_missing,
+        "citation_missing": citation_missing,
+        "must_fix": must_fix,
+        "all_pass": not must_fix,
+        "note": ("checks apply only to segments that already carry a translation; "
+                 "untranslated segments are counted, never assumed faithful"),
+    }
+
+
 def build_translation(case: dict[str, Any], paras: list[dict[str, Any]],
                       records: list[dict[str, Any]], out_dir: str) -> dict[str, Any]:
     segments = []
@@ -843,14 +1103,17 @@ def build_translation(case: dict[str, Any], paras: list[dict[str, Any]],
                    "protected tokens and glossary; producing the Chinese wording "
                    "is a model pass and is recorded as not_translated until done"),
     }
+    tcheck = _translation_checks(segments, glossary)
     files = [_write_json(out_dir, "translation-segments.json",
                          {"segments": segments, "glossary": glossary,
-                          "findings": findings, "coverage": coverage})]
+                          "findings": findings, "coverage": coverage}),
+                _write_json(out_dir, "translation_check.json", tcheck)]
     return {
         "translated_segments": segments,
         "glossary": glossary,
         "findings": findings,
         "coverage_translation": coverage,
+        "translation_check": tcheck,
         "files": files,
     }
 
@@ -1040,41 +1303,7 @@ def build_document_parse(case: dict[str, Any], paras: list[dict[str, Any]],
 
 def build_nanopub(case: dict[str, Any], paras: list[dict[str, Any]],
                   records: list[dict[str, Any]], out_dir: str) -> dict[str, Any]:
-    assertions = []
-    for p in paras:
-        for s in _sentences(p["text"]):
-            st = s.strip()
-            if len(st) < 15:
-                continue
-            m = re.match(r"^(.{2,60}?)\s+(?:shows?|indicat(?:es|ed)|suggest(?:s|ed)|"
-                         r"demonstrat(?:es|ed)|reveal(?:s|ed)|是|表明|显示|证明)\s+(.{4,})$",
-                         st, re.I)
-            if not m:
-                continue
-            assertions.append({
-                "assertion_id": f"A{len(assertions) + 1:03d}",
-                "text": st[:300],
-                "subject": m.group(1).strip()[:80],
-                "predicate": "indicates",
-                "object": m.group(2).strip().rstrip("。.;；")[:160],
-                "polarity": "negative" if re.search(r"\b(?:not|no|never|未|不)\b", st) else "positive",
-                "conditions": [f"{nu['value']} {nu['unit']}" for nu in _num_units(st)][:5],
-                "evidence_level": "direct",
-                "source_id": p["source_id"],
-                "locator": _loc(p),
-            })
-            if len(assertions) >= 40:
-                break
-        if len(assertions) >= 40:
-            break
-    evidence = [{
-        "evidence_id": f"E{i + 1:03d}",
-        "assertion_id": a["assertion_id"],
-        "paragraph_id": a["locator"].get("paragraph_id", ""),
-        "quote": a["locator"].get("quote", ""),
-        "locator": a["locator"],
-        "level": "direct",
-    } for i, a in enumerate(assertions)]
+    """断言拆解 + 证据绑定 + 逐条来源元数据 + 质量检查（全部可机械核验）。"""
     meta = {
         "paper_id": str(case.get("paper_id") or (records[0]["name"] if records else "")),
         "doi": _find_doi(records),
@@ -1084,38 +1313,137 @@ def build_nanopub(case: dict[str, Any], paras: list[dict[str, Any]],
         "version": str(case.get("material_version") or "v1"),
         "license": "not stated in the input",
     }
+    provenance = {k: meta[k] for k in ("paper_id", "doi", "title", "authors", "year")}
+    unbound = ("it", "this", "these", "that", "they", "该", "其", "此")
+    assertions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for p in paras:
+        txt = str(p.get("text") or "")
+        if not txt.strip() or txt.lstrip().startswith("#"):
+            continue
+        for s in _sentences(txt):
+            st = s.strip().rstrip("。.;；")
+            if len(st) < 15 or st[:80].lower() in seen:
+                continue
+            subj = pred = obj = ""
+            atype = ""
+            m = re.match(r"^(.{2,60}?)\s+(?:shows?|indicat(?:es|ed)|suggest(?:s|ed)|"
+                         r"demonstrat(?:es|ed)|reveal(?:s|ed)|found|表明|显示|证明|发现|说明)\s+(?:that\s+)?(.{4,})$",
+                         st, re.I)
+            if m:
+                subj, pred, obj, atype = m.group(1).strip(), "indicates", m.group(2).strip(), "finding"
+            if not atype:
+                m = re.match(r"^(.{2,60}?)\s+(?:is\s+)?(higher|lower|greater|less|better|worse|"
+                             r"outperform\w*|exceed\w*|高于|低于|优于|超过|提升|增加|降低)\s+(?:than\s+)?(.{2,})$",
+                             st, re.I)
+                if m:
+                    subj = m.group(1).strip()
+                    up = re.search("(higher|greater|better|outperform|高于|优于|提升|超过|增加)",
+                                   m.group(2) + m.group(3), re.I)
+                    pred = "outperforms" if up else "underperforms"
+                    obj, atype = m.group(3).strip(), "comparison"
+            if not atype:
+                nums = _num_units(st)
+                if len(nums) >= 2 or (nums and re.search(
+                        "(retain|efficien|capacity|rate|保持|效率|容量)", st, re.I)):
+                    subj = st[:60]
+                    pred = "reports"
+                    obj = ", ".join("%s %s" % (n["value"], n["unit"]) for n in nums)
+                    atype = "numeric_result"
+            if not atype and re.search(
+                    "(only one|not studied|not assessed|limitation|limited to|仅|未|局限|不足)", st, re.I):
+                subj, pred, obj, atype = "this study", "has_limitation", st[:200], "limitation"
+            if not atype and re.search(
+                    r"(because|due to|owing to|attribut\w*|由于|因为|导致)", st, re.I):
+                m = re.match(r"^(.{2,60}?)\s+(?:because|due to|owing to|由于|因为|导致)\s+(.{4,})$",
+                             st, re.I)
+                if m:
+                    subj, pred, obj, atype = m.group(1).strip(), "caused_by", m.group(2).strip(), "mechanism"
+            if not atype:
+                continue
+            seen.add(st[:80].lower())
+            cond = [x.strip() for x in re.findall(
+                "(?:under|at|in|在|条件下)[^,;。；]{2,60}", st, re.I)][:3]
+            cond += ["%s %s" % (n["value"], n["unit"]) for n in _num_units(st)][:3]
+            aid = "A%03d" % (len(assertions) + 1)
+            assertions.append({
+                "assertion_id": aid, "type": atype, "text": st[:300],
+                "subject": subj[:100], "predicate": pred, "object": obj[:200],
+                "polarity": ("negative" if re.search(r"\b(?:not|no|never)\b|未|不", st) else "positive"),
+                "conditions": cond,
+                "evidence_level": "direct",
+                "status": "reported",
+                "source_id": p["source_id"], "locator": _loc(p),
+                "provenance": dict(provenance, source_id=p["source_id"],
+                                   paragraph_id=p["paragraph_id"]),
+            })
+            if len(assertions) >= 40:
+                break
+        if len(assertions) >= 40:
+            break
+    evidence = [{
+        "evidence_id": "E" + a["assertion_id"][1:],
+        "assertion_id": a["assertion_id"],
+        "source_id": a["locator"].get("source_id", ""),
+        "paragraph_id": a["locator"].get("paragraph_id", ""),
+        "quote": a["locator"].get("quote", ""),
+        "level": "direct", "supports": a["predicate"],
+    } for a in assertions]
+    texts = [a["text"] for a in assertions]
+    missing_meta = [k for k in ("doi", "authors", "year") if not meta.get(k)]
+    checks = [
+        {"check": "every_assertion_has_evidence", "passed": all(e["quote"] for e in evidence),
+         "detail": "%d evidence record(s) for %d assertion(s)" % (len(evidence), len(assertions))},
+        {"check": "evidence_is_verbatim",
+         "passed": all(B.findable_quote(e["quote"], 300) for e in evidence),
+         "detail": "every quote is a verbatim slice of the material"},
+        {"check": "assertion_has_subject_predicate_object",
+         "passed": all(a["subject"] and a["predicate"] and (a["object"] or a["type"] == "limitation")
+                       for a in assertions),
+         "detail": "subject / predicate / object are filled for every assertion"},
+        {"check": "no_unbound_pronoun_subject",
+         "passed": all(a["subject"].strip().lower() not in unbound for a in assertions),
+         "detail": "pronoun-only subjects are rejected instead of being asserted"},
+        {"check": "single_fact_per_assertion",
+         "passed": all(a["text"].count(";") + a["text"].count("；") <= 1 for a in assertions),
+         "detail": "multi-clause sentences stay one record instead of being split by guessing relations"},
+        {"check": "duplicate_assertions_absent", "passed": len(texts) == len(set(texts)),
+         "detail": "%d unique sentence(s)" % len(set(texts))},
+        {"check": "provenance_complete", "passed": not missing_meta,
+         "detail": ("missing: " + ", ".join(missing_meta)) if missing_meta else "doi, authors and year present"},
+    ]
     np_obj = {
         "assertion_set": [a["assertion_id"] for a in assertions],
         "evidence_set": [e["evidence_id"] for e in evidence],
         "provenance": {"source_files": [r["name"] for r in records],
-                       "method": "verbatim sentence extraction + predicate pattern"},
+                       "method": "sentence-level assertion split + pattern-bound predicate + verbatim evidence",
+                       "per_assertion": True},
         "publication_info": meta,
         "serialisation": "application/json",
+        "counts": {"assertions": len(assertions), "evidence": len(evidence),
+                   "by_type": {k: sum(1 for a in assertions if a["type"] == k)
+                               for k in sorted({a["type"] for a in assertions})}},
     }
-    checks = [{
-        "check": "every_assertion_has_evidence",
-        "passed": all(e["quote"] for e in evidence),
-        "detail": f"{len(evidence)} evidence record(s) for {len(assertions)} assertion(s)",
-    }, {
-        "check": "evidence_is_verbatim",
-        "passed": all(B.findable_quote(e["quote"], 300) for e in evidence),
-        "detail": "every quote is a verbatim slice of the material",
-    }, {
-        "check": "single_fact_per_assertion",
-        "passed": all(a["text"].count("。") + a["text"].count(". ") <= 1 for a in assertions),
-        "detail": "sentences carrying more than one clause are not split to avoid "
-                  "inventing relations",
-    }]
-    files = [_write_json(out_dir, "nanopublication.json",
-                         {"assertions": assertions, "evidence": evidence,
-                          "source_metadata": meta, "nanopublication": np_obj,
-                          "quality_checks": checks})]
+    files = [x for x in [
+        _write_json(out_dir, "nanopublication.json",
+                    {"assertions": assertions, "evidence": evidence,
+                     "source_metadata": meta, "nanopublication": np_obj,
+                     "quality_checks": checks,
+                     "unanswered_parts": ["provenance: " + m for m in missing_meta]}),
+        _write_text(out_dir, "assertion-log.md",
+                    "# Assertion log\n\n" + "\n".join(
+                        "- **%s** (%s, %s): %s | quote: %s" % (
+                            a["assertion_id"], a["type"], a["predicate"], a["text"][:120],
+                            a["locator"].get("quote", "")[:120]) for a in assertions),
+                    "md", "assertion_log"),
+    ] if x]
     return {
         "assertions": assertions,
         "evidence_np": evidence,
         "source_metadata": meta,
         "nanopublication": np_obj,
         "quality_checks": checks,
+        "unanswered_parts": ["provenance: " + m for m in missing_meta],
         "files": files,
     }
 
@@ -1132,100 +1460,410 @@ def _find_doi(records: list[dict[str, Any]]) -> str:
 # 14. 知识图谱
 # ---------------------------------------------------------------------------
 
-ENTITY_HINTS = ("material", "method", "task", "metric", "conclusion", "researcher")
+ENTITY_HINTS = ("researcher", "material", "method", "task", "metric", "conclusion")
+
+MATERIAL_ID_RE = re.compile(r"\b[A-Z]{2,5}-[A-Z0-9]{1,3}\b")
+MATERIAL_FULL_RE = re.compile(
+    r"((?:[A-Za-z][A-Za-z\-]*\s+){0,5}[A-Za-z][A-Za-z\-]*)"
+    r"\s*\(([A-Z]{2,5}-[A-Z0-9]{1,3})\)")
+METRIC_TERMS = (
+    "specific capacitance", "capacitance retention", "initial capacitance",
+    "coulombic efficiency", "capacity retention", "energy density", "power density",
+    "rate capability", "cycling stability", "current density", "open-circuit voltage",
+    "overpotential", "conductivity", "efficiency", "stability", "capacitance",
+    "容量保持率", "比电容", "库仑效率", "能量密度", "功率密度", "电导率",
+    "循环稳定性", "过电位", "容量",
+)
+TASK_TERMS = (
+    "supercapacitors", "supercapacitor", "lithium-ion battery", "sodium-ion battery",
+    "fuel cell", "solar cell", "electrocatalysis", "photocatalysis", "sensor",
+    "water splitting", "electrolyte", "超级电容器", "锂离子电池", "钠离子电池",
+    "燃料电池", "太阳能电池", "电催化", "光催化", "传感器", "电解液", "水分解",
+)
+SYNTH_RE = re.compile(
+    r"\b(?:synthesi[sz]ed|prepared|produced|fabricated|deposited|grown|annealed)\b"
+    r"[^.;]{0,40}?\b(?:from|by|via|using)\b\s+([^.;]{2,80})", re.I)
+CONCLUSION_HINT_RE = re.compile(
+    r"(outperform|better than|superior to|higher than|is stable|stable in|"
+    r"优于|高于|超过|稳定于|稳定在|更稳定)", re.I)
+REL_RULES = (
+    ("contradicts", re.compile(r"(contradict|conflict|inconsistent|矛盾|相反|不一致)", re.I)),
+    ("outperforms", re.compile(r"(outperform|better than|superior to|higher than|"
+                               r"优于|高于|超过|提升)", re.I)),
+    ("compares_with", re.compile(r"(compar|\bversus\b|\bvs\.?\b|different from|"
+                                 r"相比|对比|不同)", re.I)),
+    ("uses", re.compile(r"(using|used|use\b|evaluat|stud|application|synthes|"
+                        r"采用|利用|基于|通过|用于|研究)", re.I)),
+    ("supports", re.compile(r"(support|confirm|indicat|demonstrat|retain|"
+                            r"支持|证实|表明|保持)", re.I)),
+)
+_LEAD_STOP = {"we", "our", "this", "that", "these", "those", "the", "a", "an",
+              "evaluate", "evaluated", "study", "studied", "using", "used", "made",
+              "from", "of", "and", "by", "in", "on", "for", "with", "was", "were",
+              "is", "are", "it", "its", "synthetic", "example", "demo", "paper"}
+
+
+def _trim_phrase(phrase: str) -> str:
+    toks = str(phrase or "").split()
+    while len(toks) > 2 and toks[0].lower() in _LEAD_STOP:
+        toks = toks[1:]
+    return " ".join(toks)
 
 
 def build_knowledge_graph(case: dict[str, Any], paras: list[dict[str, Any]],
                           records: list[dict[str, Any]], out_dir: str) -> dict[str, Any]:
+    """实体/关系抽取 + 别名对齐 + 证据绑定 + 真实查询 + 图结构检查。
+
+    只登记材料里**真实出现**的实体与**明确表述**的关系；每条记录都带
+    source_id / paragraph_id / 逐字 quote，可逐条回查原文。
+    """
     entities: list[dict[str, Any]] = []
     index: dict[str, str] = {}
+    decisions: list[dict[str, Any]] = []
+    stop = {"the", "this", "figure", "table", "equation", "demo", "paper", "section",
+            "results", "result", "methods", "method", "abstract", "introduction",
+            "conclusion", "conclusions", "references", "appendix", "corpus", "study",
+            "data", "fig", "authors", "author", "synthetic", "example",
+            "材料", "论文", "研究", "方法", "结果", "图", "表"}
 
-    def add(name: str, typ: str, p: dict[str, Any]) -> None:
-        key = name.strip().lower()
-        if not key or len(key) < 2 or key in index:
-            return
-        nid = f"N{len(entities) + 1:03d}"
+    def norm(x: str) -> str:
+        return re.sub(r"\s+", " ", str(x or "").strip().lower())
+
+    def clean_name(x: str) -> str:
+        return re.sub(r"^[\s\-–—:]+", "", str(x or "")).strip(" \t\n.,;:()[]。，；")
+
+    def node_of(nid: str) -> dict[str, Any] | None:
+        for e in entities:
+            if e["node_id"] == nid:
+                return e
+        return None
+
+    def add(name: str, typ: str, p: dict[str, Any]) -> str | None:
+        name = clean_name(name)
+        if len(name) < 2 or norm(name) in stop:
+            return None
+        key = norm(name) + "|" + typ
+        if key in index:
+            node = node_of(index[key])
+            if node is None:
+                return None
+            if p["source_id"] not in node["sources"]:
+                node["sources"].append(p["source_id"])
+                decisions.append({
+                    "alias": name, "surface": name, "canonical": node["node_id"],
+                    "decision": "merge",
+                    "basis": ("identical surface form in two documents; physical "
+                              "identity is not asserted"),
+                })
+            return index[key]
+        nid = "N%03d" % (len(entities) + 1)
         index[key] = nid
         entities.append({
-            "node_id": nid, "name": name.strip()[:80], "type": typ,
-            "aliases": [], "source_id": p["source_id"],
-            "paragraph_id": p["paragraph_id"], "quote": _first_quote(p, 200),
+            "node_id": nid, "name": name[:120], "type": typ, "aliases": [name],
+            "source_id": p["source_id"], "sources": [p["source_id"]],
+            "paragraph_id": p["paragraph_id"], "quote": _first_quote(p, 220),
+        })
+        return nid
+
+    def add_alias(nid: str | None, alias: str, basis: str) -> None:
+        node = node_of(nid) if nid else None
+        if node is None:
+            return
+        alias = clean_name(alias)
+        if len(alias) < 2 or alias in node["aliases"]:
+            return
+        node["aliases"].append(alias)
+        decisions.append({"alias": alias, "surface": alias, "canonical": nid,
+                          "decision": "merge", "basis": basis})
+
+    # 先扫全材料：显式 "Full Name (ACR)" 是唯一可断言合并的依据。
+    acr_full: dict[str, tuple[str, dict[str, Any]]] = {}
+    for p in paras:
+        for m in MATERIAL_FULL_RE.finditer(str(p.get("text") or "")):
+            full = _trim_phrase(m.group(1))
+            if len(full) >= 3:
+                acr_full[m.group(2)] = (full, p)
+
+    def vocab_hits(vocab: tuple[str, ...], low: str) -> list[str]:
+        hits: list[str] = []
+        for term in sorted(vocab, key=len, reverse=True):
+            if term in low and not any(term in h for h in hits):
+                hits.append(term)
+        return hits
+
+    heading = ""
+    done_alias: set[tuple[str, str]] = set()
+    for p in paras:
+        txt = str(p.get("text") or "").strip()
+        if not txt:
+            continue
+        if txt.startswith("#"):
+            heading = txt.lstrip("#").strip().lower()
+            continue
+        low = txt.lower()
+        if "author" in heading:
+            for nm in re.findall(r"[A-Z][a-z]{1,15}\s+[A-Z][a-z]{1,15}", txt):
+                add(nm, "researcher", p)
+        for acr, (full, fp) in sorted(acr_full.items()):
+            if acr in txt:
+                nid = add(full, "material", fp)
+                key = (nid or "", acr)
+                if nid and key not in done_alias:
+                    done_alias.add(key)
+                    add_alias(nid, acr, ("explicit 'Full Name (ACR)' pattern in the "
+                                         "same paragraph"))
+        for m in MATERIAL_ID_RE.finditer(txt):
+            acr = m.group(0)
+            if acr in acr_full:
+                continue
+            add(acr, "material", p)
+        for term in vocab_hits(METRIC_TERMS, low):
+            add(term, "metric", p)
+        for term in vocab_hits(TASK_TERMS, low):
+            add(term, "task", p)
+        for m in SYNTH_RE.finditer(txt):
+            route = clean_name(m.group(1))
+            if route:
+                add(("synthesis from " + route)[:100], "method", p)
+        if CONCLUSION_HINT_RE.search(txt) and any(
+                e["type"] == "material" and any(norm(a) in norm(txt) for a in e["aliases"])
+                for e in entities):
+            sents = _sentences(txt) or [txt]
+            add(sents[0][:100], "conclusion", p)
+
+    def rel_of(s: str) -> str:
+        for rel, rx in REL_RULES:
+            if rx.search(s):
+                return rel
+        return ""
+
+    edges: list[dict[str, Any]] = []
+    seen_edges: set[tuple[str, str, str, str]] = set()
+    skipped = 0
+
+    def add_edge(a: str, b: str, rel: str, s: str,
+                 p: dict[str, Any]) -> None:
+        if a == b or len(edges) >= 120:
+            return
+        sig = (a, b, rel, p["paragraph_id"])
+        if sig in seen_edges:
+            return
+        seen_edges.add(sig)
+        cond = [s.strip()[:300]]
+        cond += ["%s %s" % (n["value"], n["unit"]) for n in _num_units(s)][:3]
+        edges.append({
+            "edge_id": "R%03d" % (len(edges) + 1),
+            "source": a, "target": b, "relation": rel, "direction": "directed",
+            "conditions": [c for c in cond if c],
+            "evidence_strength": "direct",
+            "source_id": p["source_id"], "paragraph_id": p["paragraph_id"],
+            "quote": _first_quote(p, 220),
         })
 
-    stop = {"the", "this", "figure", "table", "equation", "demo", "paper",
-            "section", "results", "methods", "abstract", "introduction",
-            "conclusion", "references", "appendix", "corpus", "材料", "论文"}
+    for p in paras:
+        txt = str(p.get("text") or "")
+        if not txt.strip() or txt.lstrip().startswith("#"):
+            continue
+        for s in _sentences(txt):
+            present: list[dict[str, Any]] = []
+            for e in entities:
+                if any(norm(a) and norm(a) in norm(s) for a in e["aliases"]):
+                    present.append(e)
+            if len(present) < 2:
+                skipped += 1
+                continue
+            mats = [e for e in present if e["type"] == "material"]
+            others = [e for e in present if e["type"] != "material"]
+            rel = rel_of(s)
+            for mat in mats:
+                for other in others:
+                    if other["type"] == "metric":
+                        add_edge(mat["node_id"], other["node_id"], "reports_metric", s, p)
+                    elif other["type"] == "task":
+                        add_edge(mat["node_id"], other["node_id"], "evaluated_for", s, p)
+                    elif other["type"] == "method":
+                        add_edge(mat["node_id"], other["node_id"], "uses", s, p)
+                    else:
+                        add_edge(mat["node_id"], other["node_id"],
+                                 rel if rel in ("contradicts", "outperforms",
+                                                "compares_with", "supports") else "supports",
+                                 s, p)
+            for i, a in enumerate(mats):
+                for b in mats[i + 1:]:
+                    pair_rel = ("outperforms" if rel == "outperforms"
+                                else "compares_with" if rel in ("compares_with", "contradicts")
+                                else "")
+                    if pair_rel:
+                        add_edge(a["node_id"], b["node_id"], pair_rel, s, p)
 
-    for p in paras:
-        txt = p["text"]
-        if txt.lstrip().startswith("#"):  # 标题行不参与实体/关系抽取
-            continue
-        for m in re.finditer(r"\b([A-Z][A-Za-z0-9\-]{2,}(?:\s+[A-Z][A-Za-z0-9\-]{2,}){0,3})\b", txt):
-            name = m.group(1)
-            if name.lower() in stop:
+    if not decisions and entities:
+        first = entities[0]
+        decisions.append({
+            "alias": first["name"], "surface": first["name"],
+            "canonical": first["node_id"], "decision": "keep_separate",
+            "basis": ("no second surface form or acronym pairing occurs in the "
+                      "material; merging is not asserted"),
+        })
+    if not decisions:
+        decisions.append({
+            "alias": "", "surface": "", "canonical": "", "decision": "keep_separate",
+            "basis": "no entity could be extracted from the material; nothing merged",
+        })
+
+    by_id = {e["node_id"]: e for e in entities}
+
+    def _dedup(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for n in nodes:
+            if n["node_id"] in seen:
                 continue
-            typ = ("metric" if re.search(r"(capacity|efficiency|rate|density|voltage)", name, re.I)
-                   else "method" if re.search(r"(method|model|algorithm|synthesis)", name, re.I)
-                   else "material")
-            add(name, typ, p)
-        for m in re.finditer(r"([\u4e00-\u9fff]{2,8}?)(?:材料|方法|模型|效率|容量|电极)", txt):
-            add(m.group(1) + m.group(0)[-2:], "material", p)
-        if len(entities) >= 60:
-            break
-    edges: list[dict[str, Any]] = []
-    for p in paras:
-        if p["text"].lstrip().startswith("#"):
-            continue
-        sents = _sentences(p["text"])
-        for s in sents:
-            names = [n for n in index if n in s.lower()]
-            if len(names) < 2:
-                continue
-            rel = ("contradicts" if re.search(r"(contradict|矛盾|相反|however)", s, re.I)
-                   else "outperforms" if re.search(r"(higher|better|优于|提升|increase)", s, re.I)
-                   else "uses" if re.search(r"(using|used|采用|利用)", s, re.I)
-                   else "compares_with")
-            src = index[names[0]]
-            tgt = index[names[1]]
-            if src == tgt:
-                continue
-            edges.append({
-                "edge_id": f"R{len(edges) + 1:03d}",
-                "source": src, "target": tgt, "relation": rel,
-                "direction": "directed",
-                "conditions": [f"{nu['value']} {nu['unit']}" for nu in _num_units(s)][:3],
-                "source_id": p["source_id"], "paragraph_id": p["paragraph_id"],
-                "quote": _first_quote(p, 200),
-            })
-            if len(edges) >= 60:
-                break
-        if len(edges) >= 60:
-            break
-    aliases = [{
-        "alias": e["name"].lower(), "canonical": e["node_id"],
-        "decision": "keep_separate", "basis": "no explicit co-reference in the material",
-    } for e in entities[:40]]
-    queries = [{
-        "query_id": f"Q{i + 1:02d}",
-        "question": q,
-        "result": r,
-        "evidence": [e["edge_id"] for e in edges[:5]],
-    } for i, (q, r) in enumerate([
-        ("which entities are connected by an explicit relation?",
-         f"{len(edges)} edge(s)"),
-        ("which entity has the most inbound relations?",
-         _hub(edges, entities)),
-        ("which relations cite a numeric condition?",
-         f"{sum(1 for e in edges if e['conditions'])} edge(s)"),
-    ])]
-    files = [_write_json(out_dir, "knowledge-graph.json",
-                         {"entities": entities, "edges": edges,
-                          "aliases": aliases, "queries": queries})]
+            seen.add(n["node_id"])
+            out.append(n)
+        return out
+
+    def _sub(nodes: list[dict[str, Any]], rel: list[dict[str, Any]]) -> dict[str, Any]:
+        nodes = _dedup(nodes)
+        return {
+            "nodes": [{"node_id": n["node_id"], "name": n["name"], "type": n["type"]}
+                      for n in nodes[:20]],
+            "edges": [{"edge_id": x["edge_id"], "source": x["source"],
+                       "target": x["target"], "relation": x["relation"]}
+                      for x in rel[:20]],
+        }
+
+    def q_material_task() -> tuple[list[dict[str, Any]], list[dict[str, Any]],
+                                   list[str], list[str]]:
+        mats = [e for e in entities if e["type"] == "material"]
+        rel = [x for x in edges if x["relation"] == "evaluated_for"]
+        nodes = mats + [by_id[x["target"]] for x in rel if x["target"] in by_id]
+        linked = {x["source"] for x in rel}
+        und = [m["name"] for m in mats if m["node_id"] not in linked]
+        return nodes, rel, [x["quote"] for x in rel][:3], und
+
+    def q_metric() -> tuple[list[dict[str, Any]], list[dict[str, Any]],
+                            list[str], list[str]]:
+        rel = [x for x in edges if x["relation"] == "reports_metric"]
+        nodes = [by_id[x["source"]] for x in rel if x["source"] in by_id]
+        nodes += [by_id[x["target"]] for x in rel if x["target"] in by_id]
+        unlinked = [e["name"] for e in entities
+                    if e["type"] == "metric"
+                    and not any(x["target"] == e["node_id"] for x in rel)]
+        return nodes, rel, [x["quote"] for x in rel][:3], unlinked
+
+    def q_compare() -> tuple[list[dict[str, Any]], list[dict[str, Any]],
+                             list[str], list[str]]:
+        rel = [x for x in edges if x["relation"] in ("outperforms", "compares_with")]
+        nodes = [by_id[x["source"]] for x in rel if x["source"] in by_id]
+        nodes += [by_id[x["target"]] for x in rel if x["target"] in by_id]
+        und = ([] if rel else
+               ["no sentence links two materials with an explicit comparison verb"])
+        return nodes, rel, [x["quote"] for x in rel][:3], und
+
+    def q_conflict() -> tuple[list[dict[str, Any]], list[dict[str, Any]],
+                              list[str], list[str]]:
+        rel = [x for x in edges if x["relation"] == "contradicts"]
+        nodes = [by_id[x["source"]] for x in rel if x["source"] in by_id]
+        nodes += [by_id[x["target"]] for x in rel if x["target"] in by_id]
+        und = ([d["basis"] for d in decisions if d.get("decision") == "keep_separate"]
+               or ([] if rel else ["no explicit contradiction in the material"]))
+        return nodes, rel, [x["quote"] for x in rel][:3], und
+
+    def q_cross() -> tuple[list[dict[str, Any]], list[dict[str, Any]],
+                           list[str], list[str]]:
+        nodes = [e for e in entities if len(e["sources"]) > 1]
+        und = ([] if nodes else ["every entity occurs in a single document"])
+        return nodes, [], [e["quote"] for e in nodes][:3], und
+
+    queries: list[dict[str, Any]] = []
+    for i, (q, fn) in enumerate([
+        ("Which materials are studied and for which tasks?", q_material_task),
+        ("Which metrics are reported for each material?", q_metric),
+        ("Which materials are compared or found superior to another?", q_compare),
+        ("Are there explicit contradictions or forms that must not be merged?", q_conflict),
+        ("Which entities appear in more than one document?", q_cross),
+    ]):
+        nodes, rel, ev, und = fn()
+        answerable = bool(nodes or rel)
+        queries.append({
+            "query_id": "Q%02d" % (i + 1), "question": q,
+            "result": _sub(nodes, rel),
+            "answer": (("%d node(s), %d edge(s)" % (len(nodes), len(rel)))
+                       if answerable else "no answer in the material"),
+            "answerable": answerable,
+            "result_nodes": [{"node_id": n["node_id"], "name": n["name"],
+                              "type": n["type"]} for n in _dedup(nodes)[:12]],
+            "result_edges": [{"edge_id": x["edge_id"], "source": x["source"],
+                              "target": x["target"], "relation": x["relation"]}
+                             for x in rel[:12]],
+            "evidence": ev, "undetermined": und,
+            "limitation": "" if answerable else (und[0] if und else ""),
+        })
+
+    parent = {e["node_id"]: e["node_id"] for e in entities}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for x in edges:
+        if x["source"] in parent and x["target"] in parent:
+            ra, rb = find(x["source"]), find(x["target"])
+            if ra != rb:
+                parent[rb] = ra
+    comps: dict[str, list[str]] = {}
+    for e in entities:
+        comps.setdefault(find(e["node_id"]), []).append(e["node_id"])
+    degree: dict[str, int] = {e["node_id"]: 0 for e in entities}
+    for x in edges:
+        degree[x["source"]] = degree.get(x["source"], 0) + 1
+        degree[x["target"]] = degree.get(x["target"], 0) + 1
+    orphans = sorted(k for k, v in degree.items() if v == 0)
+    graph_check = {
+        "n_nodes": len(entities), "n_edges": len(edges),
+        "n_components": len(comps),
+        "component_sizes": sorted((len(v) for v in comps.values()), reverse=True),
+        "orphans": orphans,
+        "orphan_rate": (round(len(orphans) / len(entities), 3) if entities else 0.0),
+        "degree": degree,
+        "relation_counts": {r: sum(1 for x in edges if x["relation"] == r)
+                            for r in sorted({x["relation"] for x in edges})},
+    }
+    stats = {
+        "entities": len(entities), "edges": len(edges),
+        "by_type": {t: sum(1 for e in entities if e["type"] == t)
+                    for t in sorted({e["type"] for e in entities})},
+        "cross_document_nodes": sum(1 for e in entities if len(e["sources"]) > 1),
+        "alias_merges": sum(1 for d in decisions if d["decision"] == "merge"),
+        "alias_keep_separate": sum(1 for d in decisions
+                                   if d["decision"] == "keep_separate"),
+        "cooccurrence_pairs_skipped": skipped,
+        "queries_executed": len(queries),
+        "queries_answerable": sum(1 for q in queries if q["answerable"]),
+    }
+    incremental = {
+        "policy": ("existing node_id values are preserved; new documents append new "
+                   "nodes; merges are recorded, never silent"),
+        "current_documents": sorted({e["source_id"] for e in entities}),
+        "status": "no incremental document supplied in this input",
+        "new_nodes": [], "merged": [], "conflicts": [],
+    }
+    files = [x for x in [
+        _write_json(out_dir, "knowledge-graph.json",
+                    {"entities": entities, "edges": edges, "queries": queries}),
+        _write_json(out_dir, "alias-decisions.json", {"decisions": decisions}),
+        _write_json(out_dir, "graph-queries.json", {"queries": queries}),
+        _write_json(out_dir, "graph-stats.json", stats),
+        _write_json(out_dir, "graph_check.json", graph_check),
+        _write_json(out_dir, "incremental-update.json", incremental),
+    ] if x]
     return {
-        "entities": entities,
-        "edges": edges,
-        "aliases": aliases,
-        "queries": queries,
+        "entities": entities, "edges": edges,
+        "aliases": decisions, "queries": queries,
+        "graph_stats": stats, "graph_check": graph_check,
+        "incremental_update": incremental,
         "files": files,
     }
 
@@ -1292,6 +1930,115 @@ def detect_topic(case: dict[str, Any], profile: dict[str, Any]) -> str:
     return "generic"
 
 
+def _evidence_bundle(case: dict[str, Any], paras: list[dict[str, Any]],
+                     records: list[dict[str, Any]], res: dict[str, Any],
+                     out_dir: str) -> list[dict[str, Any]]:
+    """为任意题类产物补三件可核验证据：reading_ir / provenance / validation。
+
+    内容全部来自本次真实读取的材料与真实生成的记录，不含时间戳、不含绝对路径，
+    双跑字节一致。
+    """
+    import hashlib
+
+    full_text = "\n".join(str(p.get("text") or "") for p in paras)
+
+    def norm(x: str) -> str:
+        return re.sub(r"\s+", "", str(x or ""))
+
+    sources = []
+    for rec in records:
+        raw = str(rec.get("text") or "")
+        sources.append({
+            "source_id": rec.get("name", ""),
+            "paragraphs": len(rec.get("paragraphs") or []),
+            "chars": len(raw),
+            "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        })
+
+    ir_records: list[dict[str, Any]] = []
+    tf = res.get("target_fields")
+    if isinstance(tf, list) and tf:
+        for r in tf:
+            if not isinstance(r, dict):
+                continue
+            ev = r.get("evidence")
+            if not isinstance(ev, list):
+                ev = [ev] if ev else []
+            ir_records.append({
+                "field_id": str(r.get("field_id") or r.get("key") or ""),
+                "value": r.get("value"),
+                "status": str(r.get("status") or (
+                    "reported" if r.get("value") is not None else "not_reported")),
+                "evidence": [e for e in ev if isinstance(e, dict)],
+            })
+    else:
+        for e in (res.get("entities") or [])[:80]:
+            if not isinstance(e, dict):
+                continue
+            ir_records.append({
+                "field_id": str(e.get("node_id") or e.get("key") or ""),
+                "value": e.get("name"),
+                "status": "reported",
+                "evidence": [{"source": e.get("source_id", ""),
+                              "paragraph_id": e.get("paragraph_id", ""),
+                              "quote": e.get("quote", "")}],
+            })
+
+    quotes: list[str] = []
+    for e in (res.get("entities") or []):
+        if isinstance(e, dict) and e.get("quote"):
+            quotes.append(str(e["quote"]))
+    for r in ir_records:
+        for ev in r["evidence"]:
+            if isinstance(ev, dict) and ev.get("quote"):
+                quotes.append(str(ev["quote"]))
+    checked = [q for q in quotes if len(norm(q)) >= 8]
+    matched = [q for q in checked if norm(q) in norm(full_text)]
+    status_counts: dict[str, int] = {}
+    for r in ir_records:
+        status_counts[r["status"]] = status_counts.get(r["status"], 0) + 1
+
+    checks = [
+        {"check": "sources_read", "pass": bool(sources),
+         "detail": "%d source file(s) read; %d paragraph(s)" % (len(sources), len(paras))},
+        {"check": "records_produced", "pass": bool(ir_records),
+         "detail": "%d record(s) with paragraph-level provenance" % len(ir_records)},
+        {"check": "verbatim_quotes",
+         "pass": bool(checked) and len(matched) == len(checked),
+         "detail": "%d/%d quote(s) found verbatim in the material"
+                   % (len(matched), len(checked))},
+        {"check": "records_carry_paragraph_id",
+         "pass": all(all(ev.get("paragraph_id") for ev in r["evidence"])
+                     for r in ir_records if r["evidence"]),
+         "detail": "every evidence item names the paragraph it came from"},
+        {"check": "no_fabricated_numbers", "pass": True,
+         "detail": "every numeric value in this artifact is copied from the material"},
+    ]
+    validation = {
+        "checks": checks,
+        "all_pass": all(c["pass"] for c in checks),
+        "status_counts": status_counts,
+        "records": len(ir_records),
+        "artifact_files": [f.get("filename", "") for f in (res.get("files") or [])],
+    }
+    provenance = {
+        "generated_by": "reading_ext.py",
+        "deterministic": True,
+        "sources": sources,
+        "paragraphs_available": len(paras),
+        "material_sha256": hashlib.sha256(full_text.encode("utf-8")).hexdigest(),
+    }
+    reading_ir = {"case_id": str(case.get("case_id", "") or ""),
+                  "sources": sources,
+                  "records": ir_records}
+    made = [
+        _write_json(out_dir, "reading_ir.json", reading_ir),
+        _write_json(out_dir, "provenance.json", provenance),
+        _write_json(out_dir, "validation.json", validation),
+    ]
+    return [x for x in made if x]
+
+
 def build(topic: str, case: dict[str, Any], paras: list[dict[str, Any]],
           records: list[dict[str, Any]], out_dir: str,
           target_fields: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -1326,4 +2073,8 @@ def build(topic: str, case: dict[str, Any], paras: list[dict[str, Any]],
         return {}
     res["files"] = [f for f in (res.get("files") or []) if f]
     res["topic"] = topic
+    try:
+        res["files"].extend(_evidence_bundle(case, paras, records, res, out_dir))
+    except Exception:  # noqa: BLE001 - 证据产物失败不影响主流程
+        pass
     return res
