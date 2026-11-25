@@ -2019,11 +2019,18 @@ def _evidence_bundle(case: dict[str, Any], paras: list[dict[str, Any]],
         "all_pass": all(c["pass"] for c in checks),
         "status_counts": status_counts,
         "records": len(ir_records),
+        "source_boundary": {
+            "external_supplement_used": False,
+            "policy": ("every value in this artifact is extracted from the input material; "
+                       "no web lookup or model-memory supplementation is used"),
+            "unverifiable_marker": "not_provided_in_material",
+        },
         "artifact_files": [f.get("filename", "") for f in (res.get("files") or [])],
     }
     provenance = {
         "generated_by": "reading_ext.py",
         "deterministic": True,
+        "external_supplement_used": False,
         "sources": sources,
         "paragraphs_available": len(paras),
         "material_sha256": hashlib.sha256(full_text.encode("utf-8")).hexdigest(),
