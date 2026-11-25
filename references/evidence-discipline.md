@@ -79,3 +79,14 @@
 - 不写与材料无关的通用知识来凑数。
 - 不把材料里的数字做单位换算后再当原文引用。
 - 不在结果里放令牌、路径隐私、无关缓存。
+
+## Source boundary (r22)
+
+1. Read the supplied material first; nothing outside `/input` is read.
+2. This skill performs no web lookup and no model-memory supplementation:
+   `provenance.json` and `validation.json` both carry `external_supplement_used: false`.
+3. A fact the material cannot verify is written as `not_provided_in_material` in
+   `uncertainty` / `status_reason` -- never an unsourced guess.
+4. Uncertainty is preserved: the output must not sound more certain than the evidence.
+5. A required section the material cannot support is still emitted and marked as not
+   provided, instead of being dropped silently.
