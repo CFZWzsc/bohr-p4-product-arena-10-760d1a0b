@@ -100,7 +100,7 @@ KEY_SEMANTICS: list[tuple[str, str]] = [
     ("quality_check", "quality_checks"),
     ("source_metadata", "source_metadata"),
     ("assertion", "assertions"),
-    ("entity", "entities"),
+    ("entit", "entities"),
     ("edge", "edges"),
     ("alias", "aliases"),
     ("quer", "queries"),
@@ -2840,6 +2840,23 @@ def run(state: dict[str, Any], work_dir: str) -> tuple[str, str, dict[str, Any],
             canonical[key] = _generic_for(key, payload, paras, records)
         else:
             canonical[key] = sem.get(s)
+    # 契约键一律不得为 null：自检会把 null 判成缺陷并把 status 压成 partial。
+    # 缺失的键按语义给空容器，结构完整、内容诚实（不伪造值）。
+    _LIST_SEM = {"claims", "answers", "uncertainty", "unanswered", "questions",
+                 "entities", "edges", "aliases", "queries", "assertions", "formulas",
+                 "tables", "figures", "references", "evidence", "glossary",
+                 "change_log", "editable_sources", "exports", "sections",
+                 "quality_checks", "comparison_matrix", "text_blocks",
+                 "knowledge_points", "translated_segments", "target_fields",
+                 "source_metadata", "nanopublication"}
+    _DICT_SEM = {"deliverable", "source", "metadata", "quality", "coverage", "graph",
+                 "paper_card", "evidence_map", "compliance_checks", "summary",
+                 "section_plan", "consistency_audit", "case_identifiers"}
+    for key in contract:
+        if canonical.get(key) is not None:
+            continue
+        s = classify_key(key)
+        canonical[key] = ([] if s in _LIST_SEM else {} if s in _DICT_SEM else "")
     # 规范字段永远在顶层（供评分器/自检使用）
     canonical.setdefault("case_id", str(case.get("case_id", "") or ""))
     canonical["status"] = status
